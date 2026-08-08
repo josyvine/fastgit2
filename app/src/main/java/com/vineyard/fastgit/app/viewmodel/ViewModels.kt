@@ -494,50 +494,128 @@ class RepositoryViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun importRepositoryUrl(url: String, onSuccess: (Repository) -> Unit) {
+    fun importRepositoryUrl(
+        url: String,
+        newRepoName: String = "",
+        isPrivate: Boolean = false,
+        onSuccess: (Repository) -> Unit
+    ) {
         if (url.isBlank()) {
-            _statusMessage.value = "Please enter a valid GitHub URL"
+            _statusMessage.value = "Please enter a valid GitHub source URL"
             return
         }
+
         val cleanUrl = url.trim().removeSuffix("/").removeSuffix(".git")
         val parts = cleanUrl.split("/")
         if (parts.size < 2) {
             _statusMessage.value = "Invalid GitHub URL format. Use https://github.com/owner/repo"
             return
         }
-        val owner = parts[parts.size - 2]
-        val repoName = parts[parts.size - 1]
+        val sourceOwner = parts[parts.size - 2]
+        val sourceRepo = parts[parts.size - 1]
+        val targetRepoName = if (newRepoName.isNotBlank()) newRepoName else sourceRepo
 
-        viewModelScope.launch {
-            _isLoading.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.Main) {
+                _isLoading.value = true
+                _statusMessage.value = "Creating new repository '$targetRepoName' and importing files..."
+            }
+
             try {
                 if (tokenManager.isDemoMode()) {
                     val imported = Repository(
                         id = System.currentTimeMillis(),
-                        name = repoName,
-                        fullName = "$owner/$repoName",
-                        owner = User(login = owner),
+                        name = targetRepoName,
+                        fullName = "developer_android/$targetRepoName",
+                        owner = User(login = "developer_android"),
                         description = "Imported repository from $url",
-                        private = false,
+                        private = isPrivate,
                         defaultBranch = "main",
-                        stargazersCount = 128,
-                        language = "Java",
-                        updatedAt = "Today"
+                        stargazersCount = 0,
+                        language = "Kotlin",
+                        updatedAt = "Just now"
                     )
-                    _repositories.value = listOf(imported) + _repositories.value
-                    _statusMessage.value = "Repository imported successfully!"
-                    onSuccess(imported)
+                    withContext(Dispatchers.Main) {
+                        _repositories.value = listOf(imported) + _repositories.value
+                        _statusMessage.value = "Repository '$targetRepoName' imported successfully!"
+                        onSuccess(imported)
+                    }
                 } else {
                     val api = RetrofitClient.getService(tokenManager)
-                    val repo = api.getRepository(owner, repoName)
-                    _repositories.value = listOf(repo) + _repositories.value
-                    _statusMessage.value = "Imported '${repo.fullName}'"
-                    onSuccess(repo)
+                    
+                    // 1. Get current authenticated user to verify ownership
+                    val currentUser = try { api.getCurrentUser() } catch (e: Exception) { null }
+                    val newOwner = currentUser?.login ?: "developer"
+
+                    // 2. Create the new target repository under the authenticated user's account
+                    val createReq = CreateRepoRequest(
+                        name = targetRepoName,
+                        description = "Imported copy from $cleanUrl",
+                        private = isPrivate,
+                        autoInit = false
+                    )
+                    val newRepo = api.createRepository(createReq)
+                    com.vineyard.fastgit.app.utils.AppLogger.s("RepositoryViewModel", "Created target repository '${newRepo.fullName}' on GitHub.")
+
+                    // 3. Download source repository zipball and import contents into the new repository
+                    var filesImportedCount = 0
+                    try {
+                        com.vineyard.fastgit.app.utils.AppLogger.i("RepositoryViewModel", "Downloading source zipball for $sourceOwner/$sourceRepo...")
+                        val zipResponse = api.downloadZipball(sourceOwner, sourceRepo, "main")
+                        
+                        if (zipResponse.isSuccessful && zipResponse.body() != null) {
+                            val tempZip = File.createTempFile("import_source_", ".zip")
+                            val tempDir = File.createTempFile("import_extract_", "")
+                            tempDir.delete()
+                            tempDir.mkdirs()
+
+                            zipResponse.body()!!.byteStream().use { input ->
+                                tempZip.outputStream().use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+
+                            val extractedFiles = ZipUtils.unzip(tempZip.inputStream(), tempDir)
+                            val scannedFiles = ZipUtils.scanDirectory(tempDir)
+
+                            com.vineyard.fastgit.app.utils.AppLogger.i("RepositoryViewModel", "Scanned ${scannedFiles.size} files from source repository.")
+
+                            for (scanned in scannedFiles) {
+                                try {
+                                    val req = CreateFileRequest(
+                                        message = "Import ${scanned.relativePath} from $sourceOwner/$sourceRepo",
+                                        content = scanned.contentBase64,
+                                        branch = newRepo.defaultBranch
+                                    )
+                                    api.createOrUpdateFile(newOwner, targetRepoName, scanned.relativePath, req)
+                                    filesImportedCount++
+                                } catch (e: Exception) {
+                                    com.vineyard.fastgit.app.utils.AppLogger.e("RepositoryViewModel", "Failed to transfer file ${scanned.relativePath}: ${e.message}")
+                                }
+                            }
+
+                            tempZip.delete()
+                            tempDir.deleteRecursively()
+                        }
+                    } catch (e: Exception) {
+                        com.vineyard.fastgit.app.utils.AppLogger.e("RepositoryViewModel", "Source zipball transfer warning: ${e.message}", e)
+                    }
+
+                    withContext(Dispatchers.Main) {
+                        fetchRepositories()
+                        _statusMessage.value = "Repository '$targetRepoName' created and imported successfully! ($filesImportedCount files copied)"
+                        onSuccess(newRepo)
+                    }
                 }
             } catch (e: Exception) {
-                _statusMessage.value = "Could not locate repository: ${e.message}"
+                com.vineyard.fastgit.app.utils.AppLogger.e("RepositoryViewModel", "Import repository failed: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    _statusMessage.value = "Import failed: ${e.message}"
+                }
             } finally {
-                _isLoading.value = false
+                withContext(Dispatchers.Main) {
+                    _isLoading.value = false
+                }
             }
         }
     }

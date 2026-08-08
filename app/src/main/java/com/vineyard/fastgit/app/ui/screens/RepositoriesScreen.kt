@@ -274,9 +274,9 @@ fun RepositoriesScreen(
     if (showImportDialog) {
         ImportRepoDialog(
             onDismiss = { showImportDialog = false },
-            onImport = { url ->
+            onImport = { url, newRepoName, isPrivate ->
                 showImportDialog = false
-                repositoryViewModel.importRepositoryUrl(url) { imported ->
+                repositoryViewModel.importRepositoryUrl(url, newRepoName, isPrivate) { imported ->
                     onSelectRepo(imported)
                 }
             }
@@ -370,9 +370,11 @@ fun CreateRepoDialog(
 @Composable
 fun ImportRepoDialog(
     onDismiss: () -> Unit,
-    onImport: (url: String) -> Unit
+    onImport: (url: String, newRepoName: String, isPrivate: Boolean) -> Unit
 ) {
     var url by remember { mutableStateOf("") }
+    var newRepoName by remember { mutableStateOf("") }
+    var isPrivate by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -380,15 +382,25 @@ fun ImportRepoDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    text = "Paste a GitHub repository URL (e.g. https://github.com/user/project)",
+                    text = "Paste a GitHub repository URL and choose a new repository name for your imported copy.",
                     fontSize = 13.sp,
                     color = GhTextSecondaryDark
                 )
 
                 OutlinedTextField(
                     value = url,
-                    onValueChange = { url = it },
-                    label = { Text("GitHub URL") },
+                    onValueChange = { inputUrl ->
+                        url = inputUrl
+                        // Auto-extract repository name from URL if newRepoName is empty or was auto-derived
+                        val clean = inputUrl.trim().removeSuffix("/").removeSuffix(".git")
+                        val extracted = clean.substringAfterLast("/")
+                        if (extracted.isNotBlank() && !extracted.contains(":") && !extracted.contains("?")) {
+                            if (newRepoName.isBlank() || clean.endsWith(newRepoName)) {
+                                newRepoName = extracted
+                            }
+                        }
+                    },
+                    label = { Text("GitHub Source URL *") },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
@@ -396,12 +408,37 @@ fun ImportRepoDialog(
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                OutlinedTextField(
+                    value = newRepoName,
+                    onValueChange = { newRepoName = it },
+                    label = { Text("New Repository Name *") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Private Repository", color = Color.White)
+                    Switch(
+                        checked = isPrivate,
+                        onCheckedChange = { isPrivate = it },
+                        colors = SwitchDefaults.colors(checkedThumbColor = GhAccentBlue)
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onImport(url) },
-                enabled = url.isNotBlank(),
+                onClick = { onImport(url, newRepoName, isPrivate) },
+                enabled = url.isNotBlank() && newRepoName.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(containerColor = GhAccentBlue)
             ) {
                 Text("Import")

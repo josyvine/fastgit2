@@ -419,6 +419,18 @@ fun ExplorerTabContent(
     var showNewFileDialog by remember { mutableStateOf(false) }
     var showSearchReplaceDialog by remember { mutableStateOf(false) }
 
+    // Track active target directory path for creation or single file upload
+    var targetPathForAction by remember { mutableStateOf("") }
+
+    // File picker launcher for uploading a single file from local storage into targeted directory
+    val singleFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            repoDetailViewModel.uploadSingleFileToDirectory(it, targetPathForAction, context)
+        }
+    }
+
     // Dialog state for Rename and Delete
     var renameTargetItem by remember { mutableStateOf<FileItem?>(null) }
     var deleteTargetItem by remember { mutableStateOf<FileItem?>(null) }
@@ -533,7 +545,10 @@ fun ExplorerTabContent(
 
                             // New File
                             OutlinedButton(
-                                onClick = { showNewFileDialog = true },
+                                onClick = {
+                                    targetPathForAction = currentPath
+                                    showNewFileDialog = true
+                                },
                                 shape = RoundedCornerShape(8.dp),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                             ) {
@@ -726,13 +741,20 @@ fun ExplorerTabContent(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Breadcrumb Navigation Bar (Including the Maximize/Minimize Toggle button and persistent inline Plus button)
+            // Breadcrumb Navigation Bar (Including the Maximize/Minimize Toggle button and collapsible Plus button menu)
             BreadcrumbBar(
                 currentPath = currentPath,
                 onNavigatePath = { targetPath -> repoDetailViewModel.navigateToDirectory(targetPath) },
                 isMaximized = isMaximized,
                 onToggleMaximize = onToggleMaximize,
-                onCreateFileClick = { showNewFileDialog = true }
+                onCreateFileClick = {
+                    targetPathForAction = currentPath
+                    showNewFileDialog = true
+                },
+                onUploadFileClick = {
+                    targetPathForAction = currentPath
+                    singleFilePickerLauncher.launch("*/*")
+                }
             )
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -817,7 +839,10 @@ fun ExplorerTabContent(
                                         Text("Upload ZIP", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                     }
                                     OutlinedButton(
-                                        onClick = { showNewFileDialog = true },
+                                        onClick = {
+                                            targetPathForAction = currentPath
+                                            showNewFileDialog = true
+                                        },
                                         shape = RoundedCornerShape(8.dp),
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                                     ) {
@@ -856,6 +881,14 @@ fun ExplorerTabContent(
                         onOpenFolderDirect = { folder ->
                             repoDetailViewModel.navigateToDirectory(folder.path)
                         },
+                        onCreateFileInFolder = { folder ->
+                            targetPathForAction = folder.path
+                            showNewFileDialog = true
+                        },
+                        onUploadFileToFolder = { folder ->
+                            targetPathForAction = folder.path
+                            singleFilePickerLauncher.launch("*/*")
+                        },
                         onCopyItem = { fileItem -> repoDetailViewModel.copyItem(fileItem) },
                         onPasteIntoFolder = { folderPath -> repoDetailViewModel.pasteCopiedItem(folderPath) },
                         onRenameItem = { fileItem -> renameTargetItem = fileItem },
@@ -880,7 +913,7 @@ fun ExplorerTabContent(
             title = { Text("Create New File", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    val activeDirText = if (currentPath.isBlank()) "root" else "/$currentPath"
+                    val activeDirText = if (targetPathForAction.isBlank()) "root" else "/$targetPathForAction"
                     Text(
                         text = "Creating file inside: $activeDirText",
                         color = GhAccentBlue,
@@ -915,7 +948,7 @@ fun ExplorerTabContent(
                 Button(
                     onClick = {
                         showNewFileDialog = false
-                        repoDetailViewModel.createNewFile(newFileName, initialCode, "Create $newFileName via FastGit")
+                        repoDetailViewModel.createNewFileInDirectory(targetPathForAction, newFileName, initialCode, "Create $newFileName via FastGit")
                     },
                     enabled = newFileName.isNotBlank(),
                     colors = ButtonDefaults.buttonColors(containerColor = GhSuccessGreen)
@@ -1083,6 +1116,8 @@ fun TreeItemNodeRow(
     copiedItem: FileItem?,
     onItemClick: (FileItem) -> Unit,
     onOpenFolderDirect: (FileItem) -> Unit,
+    onCreateFileInFolder: (FileItem) -> Unit,
+    onUploadFileToFolder: (FileItem) -> Unit,
     onCopyItem: (FileItem) -> Unit,
     onPasteIntoFolder: (String) -> Unit,
     onRenameItem: (FileItem) -> Unit,
@@ -1090,6 +1125,7 @@ fun TreeItemNodeRow(
     onDownloadFolderZip: (FileItem) -> Unit
 ) {
     var showContextMenu by remember { mutableStateOf(false) }
+    var showPlusMenu by remember { mutableStateOf(false) }
 
     val icon = if (item.type == "dir") {
         if (item.isExpanded) Icons.Default.FolderOpen else Icons.Default.Folder
@@ -1128,6 +1164,58 @@ fun TreeItemNodeRow(
                     modifier = Modifier.weight(1f)
                 )
                 if (item.type == "dir") {
+                    // Inline Collapsible Plus Button for Directories
+                    Box {
+                        IconButton(
+                            onClick = { showPlusMenu = true },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "Add or Upload File",
+                                tint = GhSuccessGreen,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showPlusMenu,
+                            onDismissRequest = { showPlusMenu = false },
+                            modifier = Modifier.background(GhSurfaceDark)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Create File", color = Color.White) },
+                                onClick = {
+                                    showPlusMenu = false
+                                    onCreateFileInFolder(item)
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.NoteAdd,
+                                        contentDescription = null,
+                                        tint = GhSuccessGreen
+                                    )
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Upload File", color = Color.White) },
+                                onClick = {
+                                    showPlusMenu = false
+                                    onUploadFileToFolder(item)
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.FileUpload,
+                                        contentDescription = null,
+                                        tint = GhAccentBlue
+                                    )
+                                }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(2.dp))
+
                     IconButton(
                         onClick = { onOpenFolderDirect(item) },
                         modifier = Modifier.size(28.dp)
@@ -1165,6 +1253,22 @@ fun TreeItemNodeRow(
                         onOpenFolderDirect(item)
                     },
                     leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, tint = GhAccentBlue) }
+                )
+                DropdownMenuItem(
+                    text = { Text("Create File Here", color = Color.White) },
+                    onClick = {
+                        showContextMenu = false
+                        onCreateFileInFolder(item)
+                    },
+                    leadingIcon = { Icon(Icons.Default.NoteAdd, contentDescription = null, tint = GhSuccessGreen) }
+                )
+                DropdownMenuItem(
+                    text = { Text("Upload File Here", color = Color.White) },
+                    onClick = {
+                        showContextMenu = false
+                        onUploadFileToFolder(item)
+                    },
+                    leadingIcon = { Icon(Icons.Default.FileUpload, contentDescription = null, tint = GhAccentBlue) }
                 )
                 if (copiedItem != null) {
                     DropdownMenuItem(
@@ -1301,8 +1405,11 @@ fun BreadcrumbBar(
     onNavigatePath: (String) -> Unit,
     isMaximized: Boolean,
     onToggleMaximize: () -> Unit,
-    onCreateFileClick: () -> Unit
+    onCreateFileClick: () -> Unit,
+    onUploadFileClick: () -> Unit
 ) {
+    var showPlusMenu by remember { mutableStateOf(false) }
+
     val segments = remember(currentPath) {
         if (currentPath.isBlank()) {
             listOf(BreadcrumbSegment("root", ""))
@@ -1378,17 +1485,54 @@ fun BreadcrumbBar(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Persistent + Create Icon beside folder view
-                IconButton(
-                    onClick = onCreateFileClick,
-                    modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Create New File",
-                        tint = GhSuccessGreen,
-                        modifier = Modifier.size(20.dp)
-                    )
+                // Collapsible Plus Icon beside folder view for Create File vs Upload File
+                Box {
+                    IconButton(
+                        onClick = { showPlusMenu = true },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Add or Upload File",
+                            tint = GhSuccessGreen,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showPlusMenu,
+                        onDismissRequest = { showPlusMenu = false },
+                        modifier = Modifier.background(GhSurfaceDark)
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Create File", color = Color.White) },
+                            onClick = {
+                                showPlusMenu = false
+                                onCreateFileClick()
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.NoteAdd,
+                                    contentDescription = null,
+                                    tint = GhSuccessGreen
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Upload File", color = Color.White) },
+                            onClick = {
+                                showPlusMenu = false
+                                onUploadFileClick()
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.FileUpload,
+                                    contentDescription = null,
+                                    tint = GhAccentBlue
+                                )
+                            }
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.width(4.dp))

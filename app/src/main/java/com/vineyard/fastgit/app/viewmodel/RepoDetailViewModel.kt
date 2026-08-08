@@ -441,7 +441,11 @@ class RepoDetailViewModel(
     }
 
     fun createNewFile(fileName: String, initialContent: String, commitMessage: String) {
-        val fullPath = mergePaths(_currentPath.value, fileName)
+        createNewFileInDirectory(_currentPath.value, fileName, initialContent, commitMessage)
+    }
+
+    fun createNewFileInDirectory(dirPath: String, fileName: String, initialContent: String, commitMessage: String) {
+        val fullPath = mergePaths(dirPath, fileName)
         viewModelScope.launch {
             _isLoading.value = true
             AppLogger.i("FileTree", "Creating new file '$fullPath'")
@@ -469,6 +473,72 @@ class RepoDetailViewModel(
                 _statusMessage.value = "Failed to create file: ${e.message}"
             } finally {
                 _isLoading.value = false
+            }
+        }
+    }
+
+    fun uploadSingleFileToDirectory(fileUri: Uri, targetPath: String, context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.Main) {
+                _isLoading.value = true
+                _statusMessage.value = "Uploading file to /${targetPath.ifEmpty { "root" }}..."
+            }
+            try {
+                // Resolve Display Name from ContentResolver
+                var fileName = "uploaded_file"
+                context.contentResolver.query(fileUri, null, null, null, null)?.use { cursor ->
+                    val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (nameIndex != -1 && cursor.moveToFirst()) {
+                        fileName = cursor.getString(nameIndex)
+                    }
+                }
+                if (fileName == "uploaded_file" && fileUri.path != null) {
+                    fileName = fileUri.path!!.substringAfterLast('/')
+                }
+
+                val inputStream = context.contentResolver.openInputStream(fileUri)
+                if (inputStream == null) {
+                    withContext(Dispatchers.Main) {
+                        _statusMessage.value = "Failed to open selected file."
+                    }
+                    return@launch
+                }
+
+                val bytes = inputStream.readBytes()
+                inputStream.close()
+
+                val b64Content = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                val fullPath = mergePaths(targetPath, fileName)
+
+                if (tokenManager.isDemoMode()) {
+                    withContext(Dispatchers.Main) {
+                        val newFile = FileItem(name = fileName, path = fullPath, type = "file", content = String(bytes))
+                        _treeItems.value = _treeItems.value + newFile
+                        _statusMessage.value = "File '$fileName' uploaded to /${targetPath.ifEmpty { "root" }} (Demo Mode)"
+                    }
+                } else {
+                    val api = RetrofitClient.getService(tokenManager)
+                    val req = CreateFileRequest(
+                        message = "Upload $fileName to /${targetPath.ifEmpty { "root" }} via FastGit Mobile App",
+                        content = b64Content,
+                        branch = _currentBranch.value
+                    )
+                    api.createOrUpdateFile(owner, repoName, fullPath, req)
+                    withContext(Dispatchers.Main) {
+                        _statusMessage.value = "File '$fileName' uploaded successfully!"
+                        AppLogger.s("FileTree", "Uploaded file '$fullPath' to GitHub branch '${_currentBranch.value}'")
+                        loadContents(_currentPath.value)
+                    }
+                }
+            } catch (e: Exception) {
+                AppLogger.e("FileTree", "Failed to upload file to '$targetPath': ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    _statusMessage.value = "Failed to upload file: ${e.message}"
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    _isLoading.value = false
+                }
             }
         }
     }
